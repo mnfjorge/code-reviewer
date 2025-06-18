@@ -1,7 +1,33 @@
-const { createAppAuth } = require('@octokit/auth-app');
-const { Octokit } = require('@octokit/rest');
-const { ClaudeCode } = require('@anthropic-ai/claude-code');
-require('dotenv').config();
+import { createAppAuth } from '@octokit/auth-app';
+import { Octokit } from '@octokit/rest';
+import { query } from '@anthropic-ai/claude-code/sdk';
+import { VercelRequest, VercelResponse } from '@vercel/node';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+interface GitHubWebhookPayload {
+  action: string;
+  comment: {
+    body: string;
+  };
+  issue: {
+    number: number;
+    pull_request?: {
+      url: string;
+    };
+  };
+  repository: {
+    full_name: string;
+  };
+  installation: {
+    id: number;
+  };
+}
+
+interface AuthResponse {
+  token: string;
+}
 
 // Initialize Octokit with GitHub App credentials
 const octokit = new Octokit({
@@ -14,23 +40,24 @@ const octokit = new Octokit({
   },
 });
 
-// Initialize Claude Code client
-const claudeCode = new ClaudeCode({
-  apiKey: process.env.CLAUDE_API_KEY,
-});
-
-async function getInstallationOctokit(installationId) {
+async function getInstallationOctokit(installationId: number): Promise<Octokit> {
   const { token } = await octokit.auth({
     type: 'installation',
     installationId,
-  });
+  }) as AuthResponse;
 
   return new Octokit({
     auth: token,
   });
 }
 
-async function getFileContent(octokit, owner, repo, path, ref) {
+async function getFileContent(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string
+): Promise<string | null> {
   try {
     const { data } = await octokit.repos.getContent({
       owner,
@@ -38,14 +65,23 @@ async function getFileContent(octokit, owner, repo, path, ref) {
       path,
       ref,
     });
-    return Buffer.from(data.content, 'base64').toString();
+
+    if ('content' in data) {
+      return Buffer.from(data.content, 'base64').toString();
+    }
+    return null;
   } catch (error) {
     console.error(`Error getting content for ${path}:`, error);
     return null;
   }
 }
 
-async function reviewCode(octokit, owner, repo, pullNumber) {
+async function reviewCode(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<void> {
   // Get the pull request details
   const { data: pr } = await octokit.pulls.get({
     owner,
@@ -60,7 +96,11 @@ async function reviewCode(octokit, owner, repo, pullNumber) {
     pull_number: pullNumber,
   });
 
-  const reviewComments = [];
+  const reviewComments: Array<{
+    path: string;
+    position: number;
+    body: string;
+  }> = [];
 
   for (const file of files) {
     if (file.patch) {
@@ -69,18 +109,12 @@ async function reviewCode(octokit, owner, repo, pullNumber) {
         reviewComments.push({
           path: file.filename,
           position: 1,
-          body: '⚠️ Found TODO comments in the code. Please ensure these are addressed before merging.',
+          body: '⚠️ Found TODO comments in the code. Please ensure these are addressed before merging.'
         });
       }
 
       // Get the file content for AI review
-      const content = await getFileContent(
-        octokit,
-        owner,
-        repo,
-        file.filename,
-        pr.head.sha
-      );
+      const content = await getFileContent(octokit, owner, repo, file.filename, pr.head.sha);
       if (content) {
         try {
           const prompt = `Please review this code and provide feedback on:
@@ -89,41 +123,34 @@ async function reviewCode(octokit, owner, repo, pullNumber) {
 3. Security concerns
 4. Performance considerations
 
+Here's the code to review:
+\`\`\`
+${content}
+\`\`\`
+
 Be concise and to the point.`;
 
-          const review = await claudeCode.query({
-            code: content,
-            query: prompt,
+          const response = query({
+            prompt,
             options: {
-              /*
-              abortController?: AbortController
-              allowedTools?: string[]
-              appendSystemPrompt?: string
-              customSystemPrompt?: string
-              cwd?: string
-              disallowedTools?: string[]
-              executable?: 'bun' | 'deno' | 'node'
-              executableArgs?: string[]
-              maxThinkingTokens?: number
-              maxTurns?: number
-              mcpServers?: Record<string, McpServerConfig>
-              pathToClaudeCodeExecutable?: string
-              permissionMode?: PermissionMode
-              permissionPromptToolName?: string
-              continue?: boolean
-              resume?: string
-              model?: string
-              */
-              maxTurns: 3,
+              maxTurns: 1,
               maxThinkingTokens: 1000,
-            },
+            }
           });
+
+          let review = '';
+          for await (const message of response) {
+            if (message.type === 'result' && message.subtype === 'success') {
+              review = message.result;
+              break;
+            }
+          }
 
           if (review) {
             reviewComments.push({
               path: file.filename,
               position: 1,
-              body: `🤖 AI Code Review:\n\n${review}`,
+              body: `🤖 AI Code Review:\n\n${review}`
             });
           }
         } catch (error) {
@@ -131,7 +158,7 @@ Be concise and to the point.`;
           reviewComments.push({
             path: file.filename,
             position: 1,
-            body: '⚠️ Error getting AI code review. Please try again later.',
+            body: '⚠️ Error getting AI code review. Please try again later.'
           });
         }
       }
@@ -146,7 +173,7 @@ Be concise and to the point.`;
       pull_number: pullNumber,
       body: 'Code review completed. Please address the following comments:',
       comments: reviewComments,
-      event: 'REQUEST_CHANGES',
+      event: 'REQUEST_CHANGES'
     });
   } else {
     await octokit.pulls.createReview({
@@ -154,14 +181,18 @@ Be concise and to the point.`;
       repo,
       pull_number: pullNumber,
       body: 'Code review completed. No issues found! 👍',
-      event: 'APPROVE',
+      event: 'APPROVE'
     });
   }
 }
 
-module.exports = async (req, res) => {
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+): Promise<void> {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
   }
 
   const event = req.headers['x-github-event'];
@@ -175,16 +206,12 @@ module.exports = async (req, res) => {
   // For now, we'll skip signature verification for simplicity
 
   if (event === 'issue_comment') {
-    const { action, comment, issue, repository, installation } = req.body;
+    const payload = req.body as GitHubWebhookPayload;
+    const { action, comment, issue, repository, installation } = payload;
 
-    if (
-      action === 'created' &&
-      comment.body.toLowerCase().trim() === 'code review bot'
-    ) {
+    if (action === 'created' && comment.body.toLowerCase().trim() === 'code review bot') {
       try {
-        const installationOctokit = await getInstallationOctokit(
-          installation.id
-        );
+        const installationOctokit = await getInstallationOctokit(installation.id);
 
         // Check if the comment is on a pull request
         if (issue.pull_request) {
@@ -193,14 +220,16 @@ module.exports = async (req, res) => {
 
           await reviewCode(installationOctokit, owner, repo, pullNumber);
 
-          return res.status(200).json({ message: 'Code review completed' });
+          res.status(200).json({ message: 'Code review completed' });
+          return;
         }
       } catch (error) {
         console.error('Error processing webhook:', error);
-        return res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ error: 'Internal server error' });
+        return;
       }
     }
   }
 
-  return res.status(200).json({ message: 'Event processed' });
-};
+  res.status(200).json({ message: 'Event processed' });
+}
