@@ -1,5 +1,6 @@
 const { createAppAuth } = require('@octokit/auth-app');
 const { Octokit } = require('@octokit/rest');
+const { ClaudeCode } = require('@anthropic-ai/claude-code');
 require('dotenv').config();
 
 // Initialize Octokit with GitHub App credentials
@@ -13,6 +14,11 @@ const octokit = new Octokit({
   },
 });
 
+// Initialize Claude Code client
+const claudeCode = new ClaudeCode({
+  apiKey: process.env.CLAUDE_API_KEY,
+});
+
 async function getInstallationOctokit(installationId) {
   const { token } = await octokit.auth({
     type: 'installation',
@@ -22,6 +28,21 @@ async function getInstallationOctokit(installationId) {
   return new Octokit({
     auth: token,
   });
+}
+
+async function getFileContent(octokit, owner, repo, path, ref) {
+  try {
+    const { data } = await octokit.repos.getContent({
+      owner,
+      repo,
+      path,
+      ref,
+    });
+    return Buffer.from(data.content, 'base64').toString();
+  } catch (error) {
+    console.error(`Error getting content for ${path}:`, error);
+    return null;
+  }
 }
 
 async function reviewCode(octokit, owner, repo, pullNumber) {
@@ -39,20 +60,10 @@ async function reviewCode(octokit, owner, repo, pullNumber) {
     pull_number: pullNumber,
   });
 
-  // Simple code review logic - you can enhance this based on your needs
   const reviewComments = [];
 
   for (const file of files) {
     if (file.patch) {
-      // Basic review: Check for large files
-      if (file.changes > 300) {
-        reviewComments.push({
-          path: file.filename,
-          position: 1,
-          body: `⚠️ This file has a lot of changes (${file.changes} lines). Consider breaking it down into smaller, more manageable changes.`,
-        });
-      }
-
       // Check for TODO comments
       if (file.patch.includes('TODO')) {
         reviewComments.push({
@@ -60,6 +71,69 @@ async function reviewCode(octokit, owner, repo, pullNumber) {
           position: 1,
           body: '⚠️ Found TODO comments in the code. Please ensure these are addressed before merging.',
         });
+      }
+
+      // Get the file content for AI review
+      const content = await getFileContent(
+        octokit,
+        owner,
+        repo,
+        file.filename,
+        pr.head.sha
+      );
+      if (content) {
+        try {
+          const prompt = `Please review this code and provide feedback on:
+1. Code quality and best practices
+2. Potential bugs or issues
+3. Security concerns
+4. Performance considerations
+
+Be concise and to the point.`;
+
+          const review = await claudeCode.query({
+            code: content,
+            query: prompt,
+            options: {
+              /*
+              abortController?: AbortController
+              allowedTools?: string[]
+              appendSystemPrompt?: string
+              customSystemPrompt?: string
+              cwd?: string
+              disallowedTools?: string[]
+              executable?: 'bun' | 'deno' | 'node'
+              executableArgs?: string[]
+              maxThinkingTokens?: number
+              maxTurns?: number
+              mcpServers?: Record<string, McpServerConfig>
+              pathToClaudeCodeExecutable?: string
+              permissionMode?: PermissionMode
+              permissionPromptToolName?: string
+              continue?: boolean
+              resume?: string
+              model?: string
+              */
+              maxTurns: 3,
+              maxThinkingTokens: 1000,
+            },
+          });
+
+          if (review) {
+            reviewComments.push({
+              path: file.filename,
+              position: 1,
+              body: `🤖 AI Code Review:\n\n${review}`,
+            });
+          }
+        } catch (error) {
+          console.error('Error getting AI review:', error);
+          reviewComments.push({
+            path: file.filename,
+            position: 1,
+            body: '⚠️ Error getting AI code review. Please try again later.',
+          });
+        }
       }
     }
   }
