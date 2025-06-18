@@ -93,6 +93,10 @@ module.exports = async (req, res) => {
   const event = req.headers['x-github-event'];
   const signature = req.headers['x-hub-signature-256'];
 
+  console.log('event', event);
+  console.log('signature', signature);
+  console.log('body', JSON.stringify(req.body, null, 2));
+
   // Verify webhook signature here if needed
   // For now, we'll skip signature verification for simplicity
 
