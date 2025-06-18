@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "GitHub App that reviews pull request code when triggered by a comment",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "dev": "vercel dev",
     "deploy": "vercel deploy"
@@ -16,6 +17,13 @@
     "dotenv": "^16.0.3"
   },
   "devDependencies": {
+    "@types/node": "^24.0.3",
+    "typescript": "^5.8.3",
     "vercel": "^28.0.0"
+  },
+  "functions": {
+    "api/**/*.ts": {
+      "runtime": "@vercel/node"
+    }
   }
 }
