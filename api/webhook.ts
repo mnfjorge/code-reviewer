@@ -1,6 +1,6 @@
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
-import { query } from '@anthropic-ai/claude-code/sdk';
+import { query } from '@anthropic-ai/claude-code';
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import dotenv from 'dotenv';
 
@@ -133,7 +133,7 @@ Be concise and to the point.`;
           const response = query({
             prompt,
             options: {
-              maxTurns: 1,
+              maxTurns: 3,
               maxThinkingTokens: 1000,
             }
           });
