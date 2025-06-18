@@ -1,0 +1,19 @@
+{
+  "name": "code-reviewer",
+  "version": "1.0.0",
+  "description": "GitHub App that reviews pull request code when triggered by a comment",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel deploy"
+  },
+  "dependencies": {
+    "@octokit/app": "^12.0.7",
+    "@octokit/rest": "^19.0.7",
+    "@vercel/node": "^3.0.0",
+    "dotenv": "^16.0.3"
+  },
+  "devDependencies": {
+    "vercel": "^28.0.0"
+  }
+}
